@@ -1,0 +1,67 @@
+SPDX-License-Identifier: CC-BY-SA-4.0 OR BSD-2-Clause
+arch: sparc
+bsp: ajit
+build-type: bsp
+cflags: []
+copyrights:
+- Copyright (C) 2026 Shaurya Rane
+cppflags: []
+enabled-by: true
+family: ajit
+includes: []
+install:
+- destination: ${BSP_INCLUDEDIR}
+  source:
+  - bsps/sparc/ajit/include/bsp.h
+  - bsps/sparc/ajit/include/ajit.h
+- destination: ${BSP_INCLUDEDIR}/bsp
+  source:
+  - bsps/sparc/ajit/include/bsp/irq.h
+  - bsps/sparc/ajit/include/bsp/irqimpl.h
+  - bsps/sparc/include/bsp/sparc-counter.h
+- destination: ${BSP_LIBDIR}
+  source:
+  - bsps/sparc/ajit/start/linkcmds
+  - bsps/sparc/shared/start/linkcmds.base
+links:
+- role: build-dependency
+  uid: ../../obj
+- role: build-dependency
+  uid: ../../objirq
+- role: build-dependency
+  uid: objmem
+- role: build-dependency
+  uid: ../../opto2
+- role: build-dependency
+  uid: abi
+- role: build-dependency
+  uid: optconirq
+- role: build-dependency
+  uid: ../grp
+- role: build-dependency
+  uid: ../start
+- role: build-dependency
+  uid: ../../bspopts
+source:
+- bsps/sparc/ajit/cache/cache.c
+- bsps/shared/dev/getentropy/getentropy-cpucounter.c
+- bsps/shared/dev/serial/console-termios.c
+- bsps/shared/irq/irq-default-handler.c
+- bsps/shared/start/gettargethash-default.c
+- bsps/shared/start/sbrk.c
+- bsps/sparc/ajit/btimer/btimer.c
+- bsps/sparc/ajit/clock/ckinit.c
+- bsps/sparc/ajit/console/debugputs.c
+- bsps/sparc/ajit/console/ajit_console.c
+- bsps/sparc/ajit/gnatsupp/gnatsupp.c
+- bsps/sparc/ajit/start/bspdelay.c
+- bsps/sparc/ajit/start/bspidle.c
+- bsps/sparc/ajit/start/bspstart.c
+- bsps/sparc/ajit/start/ajitregs.c
+- bsps/sparc/shared/start/sparctrap.c
+- bsps/sparc/shared/gnatcommon.c
+- bsps/sparc/shared/irq/bsp_isr_handler.c
+- bsps/sparc/ajit/irq/irq.c
+- bsps/sparc/shared/start/bsp_fatal_exit.c
+- bsps/sparc/shared/start/sparc-counter-asm.S
+type: build

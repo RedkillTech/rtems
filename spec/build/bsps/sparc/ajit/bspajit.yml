@@ -37,6 +37,14 @@ links:
 - role: build-dependency
   uid: optconirq
 - role: build-dependency
+  uid: optclockspeed
+- role: build-dependency
+  uid: objsmp
+- role: build-dependency
+  uid: optajitsmp
+- role: build-dependency
+  uid: ../../tstqemu
+- role: build-dependency
   uid: ../grp
 - role: build-dependency
   uid: ../start
@@ -47,7 +55,7 @@ source:
 - bsps/shared/dev/getentropy/getentropy-cpucounter.c
 - bsps/shared/dev/serial/console-termios.c
 - bsps/shared/irq/irq-default-handler.c
-- bsps/shared/start/gettargethash-default.c
+- bsps/sparc/ajit/start/gettargethash.c
 - bsps/shared/start/sbrk.c
 - bsps/sparc/ajit/btimer/btimer.c
 - bsps/sparc/ajit/clock/ckinit.c

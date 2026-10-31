@@ -58,21 +58,28 @@ void bsp_start(void)
    *  timer may still hold values from a previous run.
    */
 
-  /* Disable the TIC (core 0 / thread 0) and clear its mirror. */
+  /* Disable this thread's TIC and clear its mask mirror. */
   ajit_write_interrupt_controller_control( 0 );
-  _AJIT_TIC_Mirror = 0;
-
-  /* Disable the count-down timer (bit 0 = 0). */
-  ajit_timer_start( 0 );
+  AJIT_TIC_MIRROR = 0;
 
   /*
-   *  Set the system clock rate (MHz) that the count-down timer reload, the
-   *  ASR30 cycle counter and the UART baud generator derive from.  The value
-   *  is stored in the CLOCK_SPEED word reserved in
-   *  bsps/sparc/shared/start/start.S and is set here before the clock driver
-   *  reads it during sysinit.
+   * Disable the count-down timer with ajit_timer_stop(), which writes 0 and
+   * leaves the enable bit clear.  ajit_timer_start(0) must not be used here:
+   * it sets the enable bit with a zero reload and fires an immediate one-shot
+   * level-10 pulse.  That pulse latches in every thread's interrupt controller
+   * and, under SMP, is later delivered as a spurious timer interrupt when an
+   * IPI raises a secondary thread's interrupt line.
    */
-  CLOCK_SPEED = 80;
+  ajit_timer_stop();
+
+  /*
+   *  Set the system clock rate (MHz) used for the count-down timer reload
+   *  and for converting ASR31 cycle counts to time.  The value comes from
+   *  the AJIT_CLOCK_SPEED_MHZ build option and is stored in the CLOCK_SPEED
+   *  word reserved in bsps/sparc/shared/start/start.S, which the BSP
+   *  populates before the clock driver runs.
+   */
+  CLOCK_SPEED = AJIT_CLOCK_SPEED_MHZ;
 
   ajit_uart_init();
 }

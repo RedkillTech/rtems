@@ -1,0 +1,20 @@
+SPDX-License-Identifier: CC-BY-SA-4.0 OR BSD-2-Clause
+actions:
+- get-integer: null
+- define: null
+build-type: option
+copyrights:
+- Copyright (C) 2026 Shaurya Rane
+default:
+- enabled-by: true
+  value: 100
+description: |
+  AJIT processor clock frequency in MHz. The BSP uses this value for the
+  count-down timer reload (cycles per tick) and for converting ASR31 cycle
+  counts to time. The default of 100 matches the AJIT QEMU model
+  (AJIT1_CPU_CLK). Real silicon typically runs at 80 MHz.
+enabled-by: true
+format: '{}'
+links: []
+name: AJIT_CLOCK_SPEED_MHZ
+type: build

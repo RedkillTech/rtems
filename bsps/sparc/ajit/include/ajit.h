@@ -50,6 +50,7 @@
 #ifndef _INCLUDE_AJIT_h
 #define _INCLUDE_AJIT_h
 
+/* Define ASM when included from assembly so the C-only sections are skipped. */
 #if defined(__ASSEMBLER__) && !defined(ASM)
   #define ASM 1
 #endif
@@ -81,10 +82,35 @@ extern "C" {
  *  (AJIT Reference Manual §8.3).  There is no separate error vector.
  */
 #define AJIT_INTERRUPT_UART_RX_TX               12
+/*
+ *  AJIT has a single on-chip count-down timer asserting interrupt level 10
+ *  (Reference Manual Ch. 8.2).  There is no separate general-purpose-timer
+ *  or real-time-clock vector.
+ */
 #define AJIT_INTERRUPT_TIMER                    10
-#define AJIT_INTERRUPT_GENERAL_PURPOSE_TIMER    10
-#define AJIT_INTERRUPT_REAL_TIME_CLOCK          10
 #define AJIT_INTERRUPT_WATCHDOG_TIMEOUT         15
+
+/*
+ *  Inter-processor interrupt (IPI) level used for SMP.  The AJIT interrupt
+ *  controller raises the IPI at SPARC interrupt level 11 and the BSP installs
+ *  its IPI handler on that level.  The Reference Manual §8.1 tabulates the IPI
+ *  at level 13; the deployed controller raises level 11.
+ */
+#define AJIT_INTERRUPT_IPI                      11
+
+/*
+ *  Hardware threads per AJIT core that are ENABLED in the deployed bitstream.
+ *  The architecture allows up to 2 (manual §2.3 / §8.1: thread-id is 0/1), but
+ *  the current FPGA target enables a single thread per core.  This value is used
+ *  to flatten the (core-id, thread-id) pair from ASR29 into the linear processor
+ *  index, which RTEMS requires to be dense (0..N-1).  With 1 thread/core the
+ *  index collapses to the core id, so core0->0, core1->1 with no gap.  (TIC
+ *  access is self-relative through the controller window, so this index only
+ *  drives the dense software arrays _AJIT_TIC_Mirror[]/_AJIT_Secondary_go[],
+ *  not physical TIC register addressing.)  Must match the hardcoded shift in
+ *  bsps/sparc/shared/start/start.S.
+ */
+#define AJIT_THREADS_PER_CORE                   1
 
 /*
  *  AJIT memory-mapped peripheral addresses.
@@ -100,9 +126,33 @@ extern "C" {
 #define AJIT_TIC_CORE1_THREAD0                     0xFFFF3008U
 #define AJIT_TIC_CORE1_THREAD1                     0xFFFF300CU
 
-/* IPI registers (Ch. 8.1.2) */
+/*
+ *  Hardware register-slot stride per core (silicon-fixed): the TIC, IPI and
+ *  IPI-message register files reserve 2 slots per core (thread-id 0/1),
+ *  independent of how many threads are actually ENABLED.  The per-thread TIC for
+ *  the physical thread P = 2*core+thread lives at AJIT_TIC_BASE + 4*P (the slots
+ *  above), and the IPI register bit for P is bit P -- so this is the index the
+ *  hardware uses, distinct from the dense RTEMS processor index.
+ */
+#define AJIT_PHYS_THREAD_SLOTS_PER_CORE 2
+
+/*
+ *  IPI registers (Ch. 8.1.2).  Layout, relative to the interrupt-controller
+ *  BASE (0xFFFF3000):
+ *    BASE + 0x80          IPI interrupt mask  (bit per destination thread)
+ *    BASE + 0x84          IPI interrupt value (bit per destination thread)
+ *    BASE + 0x88 + 8*t    upper word of message to thread t
+ *    BASE + 0x8C + 8*t    lower word of message to thread t   (t = 0..7)
+ *    BASE + 0xC8          lock (acquired via swap/ldstub)
+ *
+ *  An IPI to thread t is raised when bit t of (mask AND value) makes a
+ *  0->1 transition.
+ */
 #define AJIT_IPI_MASK                              0xFFFF3080U
 #define AJIT_IPI_VALUE                             0xFFFF3084U
+#define AJIT_IPI_MSG_HI( _thread )                 ( 0xFFFF3088U + 8U * (_thread) )
+#define AJIT_IPI_MSG_LO( _thread )                 ( 0xFFFF308CU + 8U * (_thread) )
+#define AJIT_IPI_LOCK                              0xFFFF30C8U
 
 /* Timer -- single 32-bit countdown register (Ch. 8.2) */
 #define AJIT_TIMER_REGISTER                        0xFFFF3100U
@@ -216,6 +266,67 @@ static inline void ajit_store_byte_bypass( uintptr_t addr, uint8_t value )
 
 /*
  *  ====================================================================
+ *  Inter-processor interrupt (IPI) registers -- Ch. 8.1.2 (SMP)
+ *  ====================================================================
+ */
+
+static inline uint32_t ajit_read_ipi_mask( void )
+{
+  return ajit_load_word_bypass( AJIT_IPI_MASK );
+}
+
+static inline void ajit_write_ipi_mask( uint32_t value )
+{
+  ajit_store_word_bypass( AJIT_IPI_MASK, value );
+}
+
+static inline uint32_t ajit_read_ipi_value( void )
+{
+  return ajit_load_word_bypass( AJIT_IPI_VALUE );
+}
+
+static inline void ajit_write_ipi_value( uint32_t value )
+{
+  ajit_store_word_bypass( AJIT_IPI_VALUE, value );
+}
+
+/*
+ *  The IPI register file is shared by all threads, so updates to it must be
+ *  serialized with the hardware lock at AJIT_IPI_LOCK.  The lock is acquired
+ *  with an atomic swap (manual §8.1.2 prescribes swapa/ldstuba): exchange a 1
+ *  into the lock word; if the previous value was 0 the lock is ours.
+ */
+static inline void ajit_ipi_lock_acquire( void )
+{
+  uint32_t held;
+
+  do {
+    held = 1;
+#if AJIT_USE_ASI_BYPASS
+    __asm__ __volatile__(
+      "swapa [%1] %2, %0\n\t"
+      : "+r"( held )
+      : "r"( (uintptr_t) AJIT_IPI_LOCK ), "i"( AJIT_ASI_MMU_BYPASS )
+      : "memory"
+    );
+#else
+    __asm__ __volatile__(
+      "swap [%1], %0\n\t"
+      : "+r"( held )
+      : "r"( (uintptr_t) AJIT_IPI_LOCK )
+      : "memory"
+    );
+#endif
+  } while ( held != 0 );
+}
+
+static inline void ajit_ipi_lock_release( void )
+{
+  ajit_store_word_bypass( AJIT_IPI_LOCK, 0 );
+}
+
+/*
+ *  ====================================================================
  *  Interrupt Controller (TIC) -- Ch. 8.1
  *  ====================================================================
  *
@@ -244,14 +355,43 @@ static inline void ajit_write_tic( uintptr_t tic_addr, uint32_t value )
   ajit_store_word_bypass( tic_addr, value );
 }
 
+/*
+ *  Absolute address of the RUNNING thread's own TIC control register.
+ *
+ *  The AJIT interrupt controller does not self-alias: a fixed window address
+ *  such as 0xFFFF3000 always refers to core0/thread0's TIC, not to the TIC of
+ *  the accessing thread.  Each thread therefore addresses its own TIC at
+ *  AJIT_TIC_BASE + 4*physical_thread (physical thread = 2*core+thread, read
+ *  from ASR29).  Otherwise a secondary core unmasking its interrupts would
+ *  modify core0's TIC and never receive its own IPIs.  Under !RTEMS_SMP there
+ *  is a single thread at slot 0 (AJIT_TIC_BASE).
+ */
+#if defined(RTEMS_SMP)
+static inline uintptr_t ajit_self_tic_addr( void )
+{
+  uint32_t asr29;
+
+  __asm__ __volatile__( "rd %%asr29, %0" : "=r"( asr29 ) );
+
+  return AJIT_TIC_BASE
+       + 4U * ( ( ( asr29 >> 8 ) & 0xFFU ) * AJIT_PHYS_THREAD_SLOTS_PER_CORE
+              + ( asr29 & 0xFFU ) );
+}
+#else
+static inline uintptr_t ajit_self_tic_addr( void )
+{
+  return AJIT_TIC_BASE;
+}
+#endif
+
 static inline uint32_t ajit_read_interrupt_controller_control( void )
 {
-  return ajit_load_word_bypass( AJIT_TIC_CORE0_THREAD0 );
+  return ajit_load_word_bypass( ajit_self_tic_addr() );
 }
 
 static inline void ajit_write_interrupt_controller_control( uint32_t value )
 {
-  ajit_store_word_bypass( AJIT_TIC_CORE0_THREAD0, value );
+  ajit_store_word_bypass( ajit_self_tic_addr(), value );
 }
 
 /*
@@ -266,7 +406,7 @@ static inline void ajit_write_interrupt_controller_control( uint32_t value )
  *  call this exactly once before returning, AFTER the peripheral itself
  *  has been serviced (so its source-line is de-asserted).
  */
-/* ajit_interrupt_ack() is defined below, after _AJIT_TIC_Mirror is declared. */
+/* ajit_interrupt_ack() is defined below, after AJIT_TIC_MIRROR is declared. */
 
 /*
  *  Interrupt mask helpers for core 0, thread 0 (single-core BSP).
@@ -284,13 +424,65 @@ static inline void ajit_write_interrupt_controller_control( uint32_t value )
 #define AJIT_TIC_MASK_SHIFT     0
 #define AJIT_TIC_MASK_BITS      0x0000FFFEU  /* bits [15:1] */
 
-/* Software mirror of the TIC register for atomic mask updates */
+/*
+ *  Software mirror of the TIC mask register, needed because a TIC read returns
+ *  the active-interrupt vector rather than the mask, so the mask cannot be read
+ *  back for a read-modify-write.
+ *
+ *  Each hardware thread has its own TIC, so under SMP the mirror is per
+ *  processor: a mask change made while running on one thread must not be
+ *  written into another thread's TIC.  AJIT_TIC_MIRROR resolves to the mirror
+ *  slot of the thread currently executing (its TIC is the one reached by an
+ *  access to the controller window).
+ */
+#if defined(RTEMS_SMP)
+
+/* Up to 4 cores x 2 threads = 8 thread interrupt controllers (manual §8.1). */
+#define AJIT_MAX_PROCESSORS 8
+
+extern uint32_t _AJIT_TIC_Mirror[ AJIT_MAX_PROCESSORS ];
+
+static inline uint32_t ajit_current_processor( void )
+{
+  uint32_t asr29;
+
+  __asm__ __volatile__( "rd %%asr29, %0" : "=r"( asr29 ) );
+
+  return ( ( asr29 >> 8 ) & 0xFFU ) * AJIT_THREADS_PER_CORE
+       + ( asr29 & 0xFFU );
+}
+
+/*
+ *  Physical thread number (2*core + thread) of the running thread.  Used ONLY
+ *  for IPI register bit positions / message-register addressing, which the
+ *  hardware indexes by physical slot -- NOT by the dense RTEMS processor index.
+ *  On a 1-thread-per-core bitstream these differ: core1/thread0 is RTEMS index 1
+ *  but physical thread 2.
+ */
+static inline uint32_t ajit_physical_thread_id( void )
+{
+  uint32_t asr29;
+
+  __asm__ __volatile__( "rd %%asr29, %0" : "=r"( asr29 ) );
+
+  return ( ( asr29 >> 8 ) & 0xFFU ) * AJIT_PHYS_THREAD_SLOTS_PER_CORE
+       + ( asr29 & 0xFFU );
+}
+
+#define AJIT_TIC_MIRROR ( _AJIT_TIC_Mirror[ ajit_current_processor() ] )
+
+#else /* !RTEMS_SMP */
+
 extern uint32_t _AJIT_TIC_Mirror;
+
+#define AJIT_TIC_MIRROR ( _AJIT_TIC_Mirror )
+
+#endif /* RTEMS_SMP */
 
 static inline void ajit_interrupt_ack( void )
 {
   ajit_write_interrupt_controller_control( 0 );
-  ajit_write_interrupt_controller_control( _AJIT_TIC_Mirror );
+  ajit_write_interrupt_controller_control( AJIT_TIC_MIRROR );
 }
 
 #define AJIT_Clear_interrupt( _source ) \
@@ -299,9 +491,9 @@ static inline void ajit_interrupt_ack( void )
     uint32_t _tic; \
     _level = sparc_disable_interrupts(); \
     /* Disable TIC to acknowledge, then re-enable with same mask */ \
-    ajit_write_tic( AJIT_TIC_CORE0_THREAD0, 0 ); \
-    _tic = _AJIT_TIC_Mirror; \
-    ajit_write_tic( AJIT_TIC_CORE0_THREAD0, _tic ); \
+    ajit_write_tic( ajit_self_tic_addr(), 0 ); \
+    _tic = AJIT_TIC_MIRROR; \
+    ajit_write_tic( ajit_self_tic_addr(), _tic ); \
     sparc_enable_interrupts( _level ); \
   } while (0)
 
@@ -320,18 +512,18 @@ static inline void ajit_interrupt_ack( void )
  *  position for IRQ N is (16 + N).
  */
 #define AJIT_Is_interrupt_pending( _source ) \
-  ((ajit_read_tic( AJIT_TIC_CORE0_THREAD0 ) >> 16) & (1U << (_source)))
+  ((ajit_read_tic( ajit_self_tic_addr() ) >> 16) & (1U << (_source)))
 
 #define AJIT_Is_interrupt_masked( _source ) \
-  (!((_AJIT_TIC_Mirror >> AJIT_TIC_MASK_SHIFT) & (1U << (_source))))
+  (!((AJIT_TIC_MIRROR >> AJIT_TIC_MASK_SHIFT) & (1U << (_source))))
 
 #define AJIT_Mask_interrupt( _source ) \
   do { \
     uint32_t   _level; \
     \
     _level = sparc_disable_interrupts(); \
-    _AJIT_TIC_Mirror &= ~(1U << ((_source) + AJIT_TIC_MASK_SHIFT)); \
-    ajit_write_tic( AJIT_TIC_CORE0_THREAD0, _AJIT_TIC_Mirror ); \
+    AJIT_TIC_MIRROR &= ~(1U << ((_source) + AJIT_TIC_MASK_SHIFT)); \
+    ajit_write_tic( ajit_self_tic_addr(), AJIT_TIC_MIRROR ); \
     sparc_enable_interrupts( _level ); \
   } while (0)
 
@@ -340,9 +532,9 @@ static inline void ajit_interrupt_ack( void )
     uint32_t   _level; \
     \
     _level = sparc_disable_interrupts(); \
-    _AJIT_TIC_Mirror |= (1U << ((_source) + AJIT_TIC_MASK_SHIFT)); \
-    _AJIT_TIC_Mirror |= AJIT_TIC_ENABLED_BIT; \
-    ajit_write_tic( AJIT_TIC_CORE0_THREAD0, _AJIT_TIC_Mirror ); \
+    AJIT_TIC_MIRROR |= (1U << ((_source) + AJIT_TIC_MASK_SHIFT)); \
+    AJIT_TIC_MIRROR |= AJIT_TIC_ENABLED_BIT; \
+    ajit_write_tic( ajit_self_tic_addr(), AJIT_TIC_MIRROR ); \
     sparc_enable_interrupts( _level ); \
   } while (0)
 
@@ -352,9 +544,9 @@ static inline void ajit_interrupt_ack( void )
     uint32_t   _mask = 1U << ((_source) + AJIT_TIC_MASK_SHIFT); \
     \
     _level = sparc_disable_interrupts(); \
-    (_previous) = _AJIT_TIC_Mirror & _mask; \
-    _AJIT_TIC_Mirror &= ~_mask; \
-    ajit_write_tic( AJIT_TIC_CORE0_THREAD0, _AJIT_TIC_Mirror ); \
+    (_previous) = AJIT_TIC_MIRROR & _mask; \
+    AJIT_TIC_MIRROR &= ~_mask; \
+    ajit_write_tic( ajit_self_tic_addr(), AJIT_TIC_MIRROR ); \
     sparc_enable_interrupts( _level ); \
   } while (0)
 
@@ -364,8 +556,8 @@ static inline void ajit_interrupt_ack( void )
     uint32_t   _mask = 1U << ((_source) + AJIT_TIC_MASK_SHIFT); \
     \
     _level = sparc_disable_interrupts(); \
-    _AJIT_TIC_Mirror = (_AJIT_TIC_Mirror & ~_mask) | (_previous); \
-    ajit_write_tic( AJIT_TIC_CORE0_THREAD0, _AJIT_TIC_Mirror ); \
+    AJIT_TIC_MIRROR = (AJIT_TIC_MIRROR & ~_mask) | (_previous); \
+    ajit_write_tic( ajit_self_tic_addr(), AJIT_TIC_MIRROR ); \
     sparc_enable_interrupts( _level ); \
   } while (0)
 

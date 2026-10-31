@@ -59,6 +59,22 @@ SYM(_SPARC_Bad_trap):
         srl     %l6, LEON3_ASR17_PROCESSOR_INDEX_SHIFT, %l6
         add     %l6, 1, %l4
         smul    %l4, %l5, %l5
+#elif defined(RTEMS_SMP) && defined(SPARC_BSP_AJIT)
+        /*
+         * AJIT: the processor index is core + thread, derived from %asr29
+         * ([15:8] = core, [7:0] = thread) with one hardware thread per core
+         * (AJIT_THREADS_PER_CORE == 1).  This matches the index computed in
+         * the AJIT BSP and the shared start.S SMP boot path, so the bad-trap
+         * handler uses this processor's own ISR stack rather than the boot
+         * processor's.
+         */
+        rd      %asr29, %l6
+        srl     %l6, 8, %l4
+        and     %l4, 0xff, %l4
+        and     %l6, 0xff, %l6
+        add     %l6, %l4, %l6
+        add     %l6, 1, %l4
+        smul    %l4, %l5, %l5
 #endif
         set     SYM(_ISR_Stack_area_begin), %l7
         add     %l7, %l5, %l7
@@ -100,7 +116,8 @@ SYM(_SPARC_Bad_trap):
          * Initialize %g6 since it may be corrupt.
          */
         set     SYM(_Per_CPU_Information), %g6
-#if defined(RTEMS_SMP) && defined(__leon__)
+#if defined(RTEMS_SMP) && ( defined(__leon__) || defined(SPARC_BSP_AJIT) )
+        /* %l6 still holds this processor's index from the block above. */
         sll     %l6, PER_CPU_CONTROL_SIZE_LOG2, %l4
         add     %g6, %l4, %g6
 #endif

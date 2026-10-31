@@ -39,6 +39,14 @@
 
 #include <rtems.h>
 #include <bsp.h>
+#include <ajit.h>
 
-/* Software mirror of the TIC register (core 0, thread 0) */
+/*
+ * Software mirror of each thread's TIC mask register.  Under SMP there is one
+ * slot per hardware thread (see <ajit.h>); otherwise a single mirror suffices.
+ */
+#if defined(RTEMS_SMP)
+uint32_t _AJIT_TIC_Mirror[ AJIT_MAX_PROCESSORS ];
+#else
 uint32_t _AJIT_TIC_Mirror;
+#endif

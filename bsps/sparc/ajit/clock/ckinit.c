@@ -47,18 +47,20 @@
 #include <rtems/irq-extension.h>
 #include <rtems/sysinit.h>
 #include <rtems/timecounter.h>
+#if defined(RTEMS_SMP)
+#include <rtems/score/percpu.h>
+#endif
 
 extern int CLOCK_SPEED;
 
 /*
- *  Software tick counter, incremented by every tick interrupt.  This is the
- *  timecounter source.
+ *  Timecounter source: SPARC ASR30 (AjitReferenceManual Ch. 2.2).
  *
- *  This timecounter has tick resolution.  The ASR30:31 free-running counter
- *  (AJIT Reference Manual Ch. 2.2) provides a higher-resolution time source
- *  and is used by the CPU counter below.
+ *  ASR30:31 is a 64-bit free-running counter running at the processor
+ *  clock.  The low 32 bits are read through _CPU_Counter_read() and the
+ *  timecounter frequency is set to CLOCK_SPEED * 1e6, so RTEMS converts
+ *  counter ticks back to time correctly at cycle resolution.
  */
-static volatile uint32_t ajit_tick_count;
 static uint32_t ajit_us_per_tick;
 
 /* Cycles the count-down timer is (re)loaded with for one tick. */
@@ -69,7 +71,7 @@ static struct timecounter ajit_tc;
 static uint32_t ajit_tc_get_timecount( struct timecounter *tc )
 {
   (void) tc;
-  return ajit_tick_count;
+  return (uint32_t) _CPU_Counter_read();
 }
 
 static void ajit_clock_init( void )
@@ -79,8 +81,7 @@ static void ajit_clock_init( void )
   tc = &ajit_tc;
   tc->tc_get_timecount = ajit_tc_get_timecount;
   tc->tc_counter_mask = 0xffffffff;
-  /* One increment per tick: frequency = ticks per second. */
-  tc->tc_frequency = 1000000U / ajit_us_per_tick;
+  tc->tc_frequency = _CPU_Counter_frequency();
   tc->tc_quality = RTEMS_TIMECOUNTER_QUALITY_CLOCK_DRIVER;
   rtems_timecounter_install( tc );
 
@@ -98,21 +99,34 @@ static void ajit_clock_init( void )
 
 uint32_t _CPU_Counter_frequency( void )
 {
-  return (uint32_t)CLOCK_SPEED * 1000000;
+  return (uint32_t) CLOCK_SPEED * 1000000U;
 }
 
 /*
  *  Re-arm the AJIT countdown timer for the next tick.
  *  Also acknowledge the interrupt by cycling the TIC.
+ *
+ *  AJIT has a single shared count-down timer.  Under SMP every thread receives
+ *  the tick (each acknowledges it on its own TIC), but only the boot processor
+ *  re-arms the one timer -- otherwise the secondaries would keep resetting the
+ *  shared count-down and skew the tick period.
  */
 static void ajit_clock_at_tick( void )
 {
-  /* Increment software counter */
-  ajit_tick_count++;
-
   ajit_interrupt_ack();
-  ajit_timer_start( ajit_tc_reload );
+#if defined(RTEMS_SMP)
+  if ( _Per_CPU_Is_boot_processor( _Per_CPU_Get() ) )
+#endif
+    ajit_timer_start( ajit_tc_reload );
 }
+
+/*
+ *  Under SMP every thread receives the timer interrupt and runs the clock ISR,
+ *  so the default Clock_driver_timecounter_tick() (rtems_timecounter_tick() ->
+ *  _Timecounter_Tick()) already does the right thing per CPU: it advances the
+ *  timecounter on the boot processor only and services each processor's own
+ *  watchdog chain.  No BSP override is needed here.
+ */
 
 static void ajit_clock_initialize_early( void )
 {
@@ -123,7 +137,6 @@ static void ajit_clock_initialize_early( void )
    *  registered) -- see note there.
    */
   ajit_us_per_tick = rtems_configuration_get_microseconds_per_tick();
-  ajit_tick_count = 0;
 
   /* Cycles per tick = us_per_tick * CLOCK_SPEED (MHz). */
   ajit_tc_reload = ajit_us_per_tick * (uint32_t) CLOCK_SPEED;
@@ -167,22 +180,23 @@ RTEMS_SYSINIT_ITEM(
 #include "../../../shared/dev/clock/clockimpl.h"
 
 /*
- *  CPU counter source: SPARC ASR30 (AjitReferenceManual §2.2).
+ *  CPU counter source: SPARC ASR30:31 (AJIT Reference Manual §2.2).
  *
  *  ASR30:31 is a 64-bit free-running counter that increments at the
- *  processor clock; writes are ignored.  Reading %asr30 returns the low
- *  32 bits, which is exactly SPARC's CPU_Counter_ticks width.  This
- *  gives cycle-resolution _CPU_Counter_read() used by
- *  rtems_counter_delay_*() and RTEMS profiling.
+ *  processor clock; writes are ignored.  The low 32 bits (ASR31) match the
+ *  SPARC CPU_Counter_ticks width and advance on every cycle, wrapping
+ *  cleanly under the timecounter framework's tc_counter_mask.  This provides
+ *  cycle-resolution _CPU_Counter_read() used by rtems_counter_delay_*() and
+ *  RTEMS profiling.
  */
-static CPU_Counter_ticks ajit_counter_read_asr30( void )
+static CPU_Counter_ticks ajit_counter_read_asr31( void )
 {
   CPU_Counter_ticks value;
-  __asm__ volatile ( "rd %%asr30, %0" : "=r" (value) );
+  __asm__ volatile ( "rd %%asr31, %0" : "=r" (value) );
   return value;
 }
 
 SPARC_Counter _SPARC_Counter = {
-  .read_isr_disabled = ajit_counter_read_asr30,
-  .read              = ajit_counter_read_asr30
+  .read_isr_disabled = ajit_counter_read_asr31,
+  .read              = ajit_counter_read_asr31
 };

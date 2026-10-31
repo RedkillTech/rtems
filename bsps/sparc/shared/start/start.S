@@ -42,6 +42,10 @@
   #define START_LEON3_ENABLE_SMP
 #endif
 
+#if defined(RTEMS_SMP) && defined(BSP_AJIT_SMP)
+  #define START_AJIT_ENABLE_SMP
+#endif
+
 #define TRAP_SYM(_vector) SYM(trap_##_vector)
 
 /*
@@ -486,6 +490,20 @@ SYM(hard_reset):
         sll     %l7, PER_CPU_CONTROL_SIZE_LOG2, %l2 ! per-CPU for this CPU
         add     %g6, %l2, %g6
 #endif
+#if defined(START_AJIT_ENABLE_SMP)
+        rd      %asr29, %l7 ! get CPU identity: [15:8]=core, [7:0]=thread
+        srl     %l7, 8, %l1
+        and     %l1, 0xff, %l1 ! l1 = core id
+        and     %l7, 0xff, %l7 ! l7 = thread id
+        ! AJIT_THREADS_PER_CORE == 1 on the deployed bitstream (1 thread/core),
+        ! so the linear index collapses to core + thread (= core, thread is 0).
+        ! Keep this in sync with AJIT_THREADS_PER_CORE in bsps/sparc/ajit/include/ajit.h.
+        add     %l7, %l1, %l7 ! l7 = linear processor index = core + thread
+        add     %l7, 1, %l1 ! get ISR stack offset for this CPU
+        smul    %l1, %l0, %l0
+        sll     %l7, PER_CPU_CONTROL_SIZE_LOG2, %l2 ! per-CPU for this CPU
+        add     %g6, %l2, %g6
+#endif
         set     SYM(_ISR_Stack_area_begin), %sp ! set stack pointer
         add     %sp, %l0, %sp
         andn    %sp, CPU_STACK_ALIGNMENT - 1, %sp
@@ -499,6 +517,35 @@ SYM(hard_reset):
         casa    [%l0] (10), %l1, %l7
         cmp     %l1, %l7
         bne     .Lbootsecondarycpu
+         nop
+#endif
+#if defined(START_AJIT_ENABLE_SMP)
+        /*
+         * AJIT releases every thread from reset together.  Count this thread in
+         * the online-CPU total under a short ldstub test-and-set lock (read by
+         * _CPU_SMP_Initialize).  %l7 still holds this thread's linear index.
+         */
+        set     SYM(.Lajit_boot_lock), %l0
+.Lajit_boot_lock_spin:
+        ldstub  [%l0], %l1
+        tst     %l1
+        bne     .Lajit_boot_lock_spin
+         nop
+
+        set     SYM(_AJIT_CPU_Online_count), %l2
+        ld      [%l2], %l3
+        add     %l3, 1, %l4
+        st      %l4, [%l2] ! online_count = online_count + 1
+        stb     %g0, [%l0] ! release the boot lock
+
+        /*
+         * Processor 0 (core 0, thread 0) is always the boot CPU: it clears BSS
+         * and runs boot_card, the rest wait on the release flag.  RTEMS and its
+         * tests expect the initial task to run on processor 0, so the boot CPU
+         * must be deterministic rather than "whoever arrived first".
+         */
+        tst     %l7
+        bne     .Lbootsecondarycpu_ajit
          nop
 #endif
 
@@ -516,6 +563,16 @@ SYM(hard_reset):
         cmp    %g2,%g3
         bleu,a .Lzerobss
         nop
+
+#if defined(START_AJIT_ENABLE_SMP)
+        /*
+         * BSS (which holds the ISR stacks and per-CPU control blocks) is now
+         * clear, so it is safe to release the secondary threads waiting above.
+         */
+        set     SYM(.Lajit_secondary_release), %g2
+        mov     1, %g3
+        st      %g3, [%g2]
+#endif
 
         call    SYM(_SPARC_Memory_initialize)
          nop ! o0 = end of usable RAM provided by the boot loader
@@ -538,6 +595,46 @@ SYM(hard_reset):
         .size   .Lbootcpuindex, 4
 .Lbootcpuindex:
         .long   -1
+#endif
+
+#if defined(START_AJIT_ENABLE_SMP)
+.Lbootsecondarycpu_ajit:
+        /*
+         * Spin (registers only, no stack) until the boot CPU has cleared BSS
+         * and set the release flag.  Only then is it safe to run C code, since
+         * our ISR stack and per-CPU control block live in BSS.
+         */
+        set     SYM(.Lajit_secondary_release), %l0
+.Lajit_wait_release:
+        ld      [%l0], %l1
+        tst     %l1
+        be      .Lajit_wait_release
+         nop
+
+        call    SYM(bsp_start_on_secondary_processor) ! does not return
+         mov    %g6, %o0
+
+        .section .data, "aw"
+        .align  4
+
+        /* Number of AJIT threads that checked in during boot (read by C). */
+        PUBLIC(_AJIT_CPU_Online_count)
+        .type   SYM(_AJIT_CPU_Online_count), #object
+        .size   SYM(_AJIT_CPU_Online_count), 4
+SYM(_AJIT_CPU_Online_count):
+        .long   0
+
+        /* Test-and-set lock serializing the boot-CPU election. */
+        .type   .Lajit_boot_lock, #object
+        .size   .Lajit_boot_lock, 4
+.Lajit_boot_lock:
+        .long   0
+
+        /* Set to 1 by the boot CPU once BSS is clear; gates the secondaries. */
+        .type   .Lajit_secondary_release, #object
+        .size   .Lajit_secondary_release, 4
+.Lajit_secondary_release:
+        .long   0
 #endif
 
 /* end of file */

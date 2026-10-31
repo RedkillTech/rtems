@@ -1,0 +1,22 @@
+SPDX-License-Identifier: CC-BY-SA-4.0 OR BSD-2-Clause
+actions:
+- get-string: null
+- split: null
+- env-append: null
+build-type: option
+copyrights:
+- Copyright (C) 2026 Shaurya Rane
+default:
+- enabled-by: true
+  value:
+  - -mcpu=v8
+  - -DSPARC_BSP_AJIT
+description: |
+  ABI flags.  AJIT is a generic SPARC V8 (-mcpu=v8) and has no -mcpu-derived
+  identifying macro, so -DSPARC_BSP_AJIT is defined to let the shared SPARC
+  CPU-port code (cpukit/score/cpu/sparc/sparc-bad-trap.S) select the AJIT
+  %asr29 processor-index path under SMP.
+enabled-by: true
+links: []
+name: ABI_FLAGS
+type: build

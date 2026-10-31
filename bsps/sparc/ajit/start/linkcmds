@@ -1,0 +1,28 @@
+/*  linkcmds
+ *
+ *  Linker script for the AJIT processor (IIT Bombay SPARC V8).
+ *
+ *  The image is based in DRAM at 0x40000000.  The on-chip peripherals
+ *  occupy the 0xFFFF0000 region (interrupt controller 0xFFFF3000, timer
+ *  0xFFFF3100, UART 0xFFFF3200).
+ *
+ *  The region base and size are the linker symbols _RAM_START and _RAM_SIZE
+ *  and can be overridden at link time, for example
+ *  -Wl,--defsym=_RAM_START=0x0, to retarget across board variants.
+ */
+
+_PROM_SIZE = DEFINED (_PROM_SIZE) ? _PROM_SIZE : 1M;
+_PROM_START = DEFINED (_PROM_START) ? _PROM_START : 0x00000000;
+
+_RAM_SIZE = DEFINED (_RAM_SIZE) ? _RAM_SIZE : 4M;
+_RAM_START = DEFINED (_RAM_START) ? _RAM_START : 0x40000000; /* AJIT Genesys2 DRAM base */
+
+MEMORY
+{
+  rom     : ORIGIN = _PROM_START, LENGTH = _PROM_SIZE
+  ram     : ORIGIN = _RAM_START,  LENGTH = _RAM_SIZE
+}
+
+ENTRY(start)
+
+INCLUDE linkcmds.base

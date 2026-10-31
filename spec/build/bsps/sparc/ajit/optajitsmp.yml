@@ -1,0 +1,18 @@
+SPDX-License-Identifier: CC-BY-SA-4.0 OR BSD-2-Clause
+actions:
+- get-boolean: null
+- define-condition: null
+build-type: option
+copyrights:
+- Copyright (C) 2026 Shaurya Rane
+default:
+- enabled-by: true
+  value: true
+description: |
+  Always defined when on an AJIT to enable the AJIT support for determining the
+  CPU core number (from ASR29) and the secondary-core boot path in an SMP
+  configuration.
+enabled-by: true
+links: []
+name: BSP_AJIT_SMP
+type: build
